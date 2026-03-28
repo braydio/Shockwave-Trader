@@ -1,0 +1,99 @@
+# Energy Shock Confirmation Strategy Configuration
+# Strategy 01: Trade when energy supply risk aligns with market confirmation
+
+strategy:
+  name: energy_shock_confirmation
+  version: "1.0"
+  description: |
+    Trade XLE when geopolitical/supply-side stress pushes oil-risk higher
+    and market price action confirms it.
+
+# Entry thresholds
+thresholds:
+  event_pressure_min: 0.65      # Minimum event pressure to consider entry
+  market_confirmation_min: 0.60  # Minimum market confirmation score
+  risk_regime_min: 0.50         # Minimum risk regime score
+  trade_confidence_min: 0.68    # Final signal confidence threshold
+
+# Risk parameters
+risk:
+  stop_loss_pct: 0.025          # Exit if PnL <= -2.5%
+  take_profit_pct: 0.04          # Exit 50% if PnL >= +4%
+  trailing_stop_pct: 0.015       # Trailing stop after take profit
+  max_holding_days: 5            # Max days to hold if no intensification
+  cooldown_hours: 24             # Hours between trades
+
+# Position sizing
+sizing:
+  base_usd: 500                  # Base position size
+  max_position_pct: 0.05         # Max 5% of capital per trade
+  min_confidence_for_full: 0.80  # Full size only with high confidence
+
+# Tradable symbols
+symbols:
+  trade_symbol: XLE              # Primary energy ETF
+  confirm_symbols:
+    - USO                        # Crude oil proxy
+    - SPY                        # Market context
+    - VIXY                       # Volatility filter
+
+# Freshness requirements
+freshness:
+  window_hours: 6                # Events must be new/intensified within 6h
+  require_fresh_for_entry: true  # Reject stale signals
+
+# Scoring weights
+scoring:
+  # Event pressure components
+  event_pressure:
+    gdelt_weight: 0.45
+    telegram_weight: 0.30
+    eia_weight: 0.25
+
+  # Final confidence
+  confidence:
+    event_pressure_weight: 0.50
+    market_confirmation_weight: 0.35
+    risk_regime_weight: 0.15
+
+  # Delta weights
+  delta:
+    new: 1.00
+    intensified: 1.20
+    repeated: 0.25
+    decayed: -0.60
+    duplicate: 0.00
+
+# Market thresholds for confirmation
+market:
+  xle_threshold_pct: 0.8          # XLE must be up at least 0.8%
+  uso_threshold_pct: 1.0         # USO must be up at least 1.0%
+  relative_strength_threshold: 0.75  # XLE vs SPY outperformance
+
+# VIX regime thresholds
+vix:
+  good_max: 20                   # VIX < 20 = good environment
+  caution_max: 24                # VIX 20-24 = caution
+  elevated_max: 30              # VIX 24-30 = reduced
+  blocked_min: 30                # VIX > 30 = no new positions
+
+# Event tags that trigger energy scoring
+energy_tags:
+  - supply_disruption
+  - inventory_draw
+  - shipping_risk
+  - geopolitical_escalation
+  - sanctions_supply_risk
+  - refinery_outage
+  - middle_east
+  - opec
+  - pipeline
+  - tanker
+  - chokepoint
+
+# Logging
+logging:
+  level: INFO
+  log_signals: true
+  log_exits: true
+  explain_trades: true
