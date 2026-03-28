@@ -24,13 +24,16 @@ from arbiter.config.settings import (
     CYCLE_INTERVAL_SECONDS,
     DISCORD_NOTIFICATIONS_ENABLED,
     DISCORD_WEBHOOK_URL,
+    OPENAI_ADVISOR_ENABLED,
 )
 from arbiter.delta.compute import annotate_deltas, build_snapshot
 from arbiter.delta.state import DeltaState
 from arbiter.execution.client import create_execution_client, ExecutionBackend
 from arbiter.execution.order_executor import OrderExecutor
+from arbiter.llm import OpenAITradeAdvisor, TradeHypothesisRequest
 from arbiter.lib.logger import log_event, setup_logger
 from arbiter.notifications.discord import DiscordNotifier, TradeAlert, AlertLevel
+from arbiter.signals.risk import build_risk_budget
 from arbiter.strategies.energy_shock import (
     EnergyShockDecisionEngine,
     EnergySignal,
@@ -63,6 +66,7 @@ class ArbiterDaemon:
         self.executor: Optional[OrderExecutor] = None
         self.decision_engine: Optional[EnergyShockDecisionEngine] = None
         self.discord: Optional[DiscordNotifier] = None
+        self.trade_advisor: Optional[OpenAITradeAdvisor] = None
 
         self.market_data: dict = {}
         self.fred_raw: dict = {}
@@ -111,6 +115,17 @@ class ArbiterDaemon:
             self.discord = DiscordNotifier(webhook_url=DISCORD_WEBHOOK_URL)
             logger.info("Discord notifications enabled")
             console.print("[green]Discord notifications enabled[/green]")
+
+        if OPENAI_ADVISOR_ENABLED:
+            advisor = OpenAITradeAdvisor()
+            if advisor.is_configured():
+                self.trade_advisor = advisor
+                logger.info("OpenAI trade advisor enabled")
+                console.print("[green]OpenAI trade advisor enabled[/green]")
+            else:
+                logger.warning(
+                    "OPENAI_ADVISOR_ENABLED=true but OPENAI_API_KEY is not configured"
+                )
 
         self.decision_engine = EnergyShockDecisionEngine(
             client=self.client or create_execution_client(ExecutionBackend.PAPER),
@@ -230,6 +245,92 @@ class ArbiterDaemon:
         if self.discord:
             self.discord.send_error(error, f"Cycle {self.cycle_count}")
 
+    def _build_trade_hypothesis(
+        self,
+        strategy_decision,
+        signal: EnergySignal,
+        price: float,
+    ) -> TradeHypothesisRequest:
+        """Package the current signal, market state, and risk budget for review."""
+        trade = strategy_decision.trade
+        if trade is None:
+            raise ValueError("Cannot build a trade hypothesis without a trade")
+
+        account = None
+        if self.client is not None:
+            try:
+                account = self.client.get_account()
+            except Exception as exc:
+                logger.warning("Could not fetch account for advisor context: %s", exc)
+
+        position_size = "Unavailable"
+        if account is not None:
+            budget = build_risk_budget(account, self.config.max_position_pct)
+            requested_notional = trade.amount_usd or (trade.qty * price)
+            position_size = (
+                f"Requested ${requested_notional:,.2f}; "
+                f"available ${budget.available_trade_value:,.2f}; "
+                f"max position ${budget.max_position_value:,.2f}; "
+                f"buying power ${budget.buying_power:,.2f}; "
+                f"equity ${budget.equity:,.2f}"
+            )
+
+        market_parts = []
+        for symbol in ("XLE", "USO", "SPY", "VIXY"):
+            data = self.market_data.get(symbol, {})
+            symbol_price = data.get("price")
+            if symbol_price is None:
+                continue
+            change = data.get("change_pct", 0.0)
+            market_parts.append(f"{symbol} ${float(symbol_price):.2f} ({change:+.2f}%)")
+
+        if price > 0 and trade.symbol not in {"XLE", "USO", "SPY", "VIXY"}:
+            market_parts.insert(0, f"{trade.symbol} ${price:.2f}")
+
+        price_context = "; ".join(market_parts) if market_parts else "Unavailable"
+        risk_notes = (
+            f"Signal confidence {signal.confidence:.3f}; "
+            f"event pressure {signal.event_pressure:.3f}; "
+            f"market confirmation {signal.market_confirmation:.3f}; "
+            f"risk regime {signal.risk_regime:.3f}; "
+            f"status {strategy_decision.status}; "
+            f"note {strategy_decision.note}"
+        )
+
+        return TradeHypothesisRequest(
+            symbol=trade.symbol,
+            side=trade.side,
+            thesis=trade.reasoning,
+            price_context=price_context,
+            risk_notes=risk_notes,
+            position_size=position_size,
+        )
+
+    def _maybe_review_trade_hypothesis(
+        self,
+        strategy_decision,
+        signal: EnergySignal,
+        price: float,
+    ) -> None:
+        """Run the OpenAI trade review before execution when enabled."""
+        if self.trade_advisor is None or strategy_decision.trade is None:
+            return
+
+        try:
+            hypothesis = self._build_trade_hypothesis(strategy_decision, signal, price)
+            review = self.trade_advisor.review(hypothesis)
+            logger.info(
+                "OpenAI trade review for %s %s: %s",
+                strategy_decision.trade.side,
+                strategy_decision.trade.symbol,
+                review,
+            )
+            console.print("\n[bold magenta]AI Trade Review[/bold magenta]")
+            console.print(review)
+            console.print()
+        except Exception as exc:
+            logger.warning("OpenAI trade review failed: %s", exc)
+
     def display_status(self, signal: Optional[EnergySignal] = None):
         """Display current status to console."""
         state = self.state_manager.load()
@@ -270,10 +371,14 @@ class ArbiterDaemon:
             f"[dim]Backend: {self._get_backend_name()} | Mode: {'DRY RUN' if self.dry_run else 'LIVE'}[/dim]"
         )
 
-    async def run_cycle(self) -> Optional[EnergySignal]:
+    async def run_cycle(self, show_timestamp: bool = True) -> Optional[EnergySignal]:
         """Run one strategy cycle."""
         self.cycle_count += 1
         timestamp = datetime.now().strftime("%H:%M:%S")
+        if show_timestamp:
+            console.print(
+                f"[bold yellow]▶ Cycle {self.cycle_count} @ {timestamp}[/bold yellow]"
+            )
         logger.info("=== Cycle %s at %s ===", self.cycle_count, timestamp)
 
         await self.fetch_all_data()
@@ -300,6 +405,7 @@ class ArbiterDaemon:
             )
 
             price = self.market_data.get("XLE", {}).get("price", 0.0)
+            self._maybe_review_trade_hypothesis(strategy_decision, signal, price)
 
             # Discord notification
             if strategy_decision.status == "entry":
@@ -395,8 +501,13 @@ async def _main(
     cycle_seconds: int = CYCLE_INTERVAL_SECONDS,
     dry_run: bool = False,
     backend: Optional[str] = None,
+    fast: bool = False,
 ) -> None:
     """Main entry point."""
+    if fast:
+        cycle_seconds = 3  # Fast mode: 3 seconds per cycle
+        console.print("[yellow]⚡ FAST MODE enabled (3s cycles)[/yellow]")
+
     backend_enum = None
     if backend:
         backend = backend.lower()
@@ -435,8 +546,16 @@ if __name__ == "__main__":
     parser.add_argument(
         "--backend", "-b", choices=["public", "paper"], help="Execution backend"
     )
+    parser.add_argument(
+        "--fast", "-f", action="store_true", help="Fast mode (3s cycles for demo)"
+    )
     args = parser.parse_args()
 
     asyncio.run(
-        _main(cycle_seconds=args.cycle, dry_run=args.dry_run, backend=args.backend)
+        _main(
+            cycle_seconds=args.cycle,
+            dry_run=args.dry_run,
+            backend=args.backend,
+            fast=args.fast,
+        )
     )

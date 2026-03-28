@@ -85,6 +85,15 @@ LOG_DIR = os.getenv("LOG_DIR", "storage/logs")
 # Scheduler
 CYCLE_INTERVAL_SECONDS = int(os.getenv("CYCLE_INTERVAL_SECONDS", "300"))
 
+# OpenAI advisor
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5")
+OPENAI_TIMEOUT_SECONDS = int(os.getenv("OPENAI_TIMEOUT_SECONDS", "45"))
+OPENAI_ADVISOR_ENABLED = (
+    os.getenv("OPENAI_ADVISOR_ENABLED", "false").lower() == "true"
+)
+
 # Signal thresholds
 MIN_CONFIDENCE = float(os.getenv("MIN_CONFIDENCE", "0.7"))
 MIN_MAGNITUDE = float(os.getenv("MIN_MAGNITUDE", "0.5"))

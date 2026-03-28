@@ -18,6 +18,7 @@ from arbiter.config.settings import (
 )
 from arbiter.execution.client import create_execution_client
 from arbiter.execution.order_executor import OrderExecutor, TradeDecision
+from arbiter.llm import OpenAITradeAdvisor, TradeHypothesisRequest
 from arbiter.storage.trade_log import TradeLogger
 
 console = Console()
@@ -248,6 +249,50 @@ def show_order_history():
         console.print(f"[red]Error: {exc}[/red]")
 
 
+def review_trade_hypothesis():
+    """Send a trade hypothesis to OpenAI for a quick structured review."""
+    symbol = console.input("\n[bold cyan]Symbol: [/bold cyan]").strip().upper()
+    side = console.input("[bold cyan]Side (buy/sell): [/bold cyan]").strip().lower()
+    thesis = console.input("[bold cyan]Trade thesis: [/bold cyan]").strip()
+    price_context = console.input(
+        "[bold cyan]Price / setup context (optional): [/bold cyan]"
+    ).strip()
+    position_size = console.input(
+        "[bold cyan]Planned size (optional): [/bold cyan]"
+    ).strip()
+    risk_notes = console.input(
+        "[bold cyan]Risk notes / invalidation (optional): [/bold cyan]"
+    ).strip()
+
+    if side not in {"buy", "sell"}:
+        console.print("[red]Invalid side. Use buy or sell.[/red]")
+        return
+    if not thesis:
+        console.print("[red]Trade thesis is required.[/red]")
+        return
+
+    advisor = OpenAITradeAdvisor()
+    if not advisor.is_configured():
+        console.print("[red]OPENAI_API_KEY is not configured in .env[/red]")
+        return
+
+    try:
+        review = advisor.review(
+            TradeHypothesisRequest(
+                symbol=symbol,
+                side=side,
+                thesis=thesis,
+                price_context=price_context,
+                position_size=position_size,
+                risk_notes=risk_notes,
+            )
+        )
+        console.print("\n[bold magenta]OpenAI Trade Review[/bold magenta]")
+        console.print(review)
+    except Exception as exc:
+        console.print(f"[red]Review failed: {exc}[/red]")
+
+
 def print_menu():
     """Display main menu."""
     console.print("\n[bold green]Arbiter CLI[/bold green]")
@@ -258,6 +303,7 @@ def print_menu():
     console.print("[4] Submit Trade")
     console.print("[5] Open Orders")
     console.print("[6] Order History")
+    console.print("[7] Review Trade Hypothesis")
     console.print("[0] Exit")
     console.print()
 
@@ -283,6 +329,8 @@ def main():
             show_orders()
         elif choice == "6":
             show_order_history()
+        elif choice == "7":
+            review_trade_hypothesis()
         elif choice == "0":
             console.print("[bold red]Goodbye![/bold red]")
             sys.exit(0)
