@@ -195,8 +195,8 @@ After=network.target
 [Service]
 Type=simple
 User=braydenchaffee
-WorkingDirectory=/home/braydenchaffee/Production/Crucible/Arbiter
-ExecStart=/home/braydenchaffee/Production/Crucible/Arbiter/.venv/bin/python -m arbiter.scheduler.daemon --backend public
+WorkingDirectory=/home/me/Arbiter
+ExecStart=/home/me/Arbiter/.venv/bin/python -m arbiter.scheduler.daemon --backend public
 Restart=always
 RestartSec=10
 Environment="PUBLIC_API_ACCESS_TOKEN=xxx"
